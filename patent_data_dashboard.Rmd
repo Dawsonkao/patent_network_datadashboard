@@ -1,0 +1,879 @@
+---
+title: "Patent Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    theme: default
+    social: menu
+    source_code: embed 
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+pacman::p_load(stringr,dplyr,data.table,readr)
+pacman::p_load(shinyWidgets,shinythemes,DT)
+pacman::p_load(highcharter, RColorBrewer,ggplot2,manipulate,pheatmap)
+pacman::p_load(googleLanguageR)
+
+path="~/Desktop/科管計畫/patent_search_and_deep_learning/2023/Dawson/"#程式儲存的路徑
+subDir="shiny_rdata" #R data儲存位置
+#讀入函式庫
+source(paste0(path,'r_function/function_1.R'))
+source(paste0(path,'r_function/function_4.R'))
+
+#基本參數設置、初始化
+N1=5
+default_firm="TOYOTA MOTOR CO LTD"
+
+if(!file.exists(paste0(subDir))){
+  dir.create(paste0(path, subDir),showWarnings = FALSE)
+}
+
+if(!"patent_data_dashboard.rdata" %in% list.files(paste0(path,subDir))){
+################################################################################
+#專利資訊
+#讀入專利
+
+lens_15_20_application <- read_csv(paste0(path,"lens_result/lens_15_20_application.csv"))
+lens_21_23_application <- read_csv(paste0(path,"lens_result/lens_21_23_application.csv"))
+#讀入Applicant修正表
+firm_adjust_table <- read_csv(paste0(path,"data2/firm_adjust_table_v1.45.csv"))
+
+
+
+colnames=intersect(colnames(lens_15_20_application),colnames(lens_21_23_application))
+
+
+lens_15_20_application=lens_15_20_application%>%select(all_of(colnames))
+lens_21_23_application=lens_21_23_application%>%select(all_of(colnames))
+
+
+patent_info=rbind(lens_15_20_application,lens_21_23_application)
+patent_info=patent_info%>%unique()%>%filter(!is.na(Applicants))
+################################################################################
+#讀入預測結果
+predict_df <- read_csv(paste0(path,"GNN/model_result/result_0423_v2.csv"))
+predict_df$Edges=paste0(predict_df$Firm_a,';;',predict_df$Firm_b)
+
+pat="VOLKSWAGEN AG"
+predict_df[str_detect(predict_df$Edges,pat),c("pred","Edges")]
+
+################################################################################
+
+################################################################################
+
+#cpc_char_len=4
+#pat="Samsung"
+
+
+
+################################################################################
+#修正重複CPC問題
+patent_info$`CPC Classifications`=lapply(patent_info$`CPC Classifications`, function(x){
+  x=str_split(x,";;")%>%unlist%>%unique
+  x=paste0(x,"",collapse = ";;")
+  return(x)
+})%>%unlist
+#新增Final Applicant
+patent_info=create_final_applicant(patent_info,firm_adjust_table)
+patent_info=patent_info[[1]]
+
+save(patent_info,predict_df,file=paste0(path,"shiny_rdata/","patent_data_dashboard.rdata"))
+}else{
+  load(paste0(path,"shiny_rdata/","patent_data_dashboard.rdata"))
+}
+
+#推薦結果公司名修正
+predict_df <- read_csv(paste0(path,"GNN/model_result/result_0423_v2.csv"))
+
+
+firm_adjust_table <- read_csv(paste0(path,"data2/firm_adjust_table_v1.45.csv"))
+pre_update_df=data.frame(Applicants=c(predict_df$Firm_a,predict_df$Firm_b)%>%unique()%>%sort)
+pre_update_df=left_join(pre_update_df,firm_adjust_table)
+pre_update_df$Final_Applicant[is.na(pre_update_df$Final_Applicant)]=pre_update_df$Applicant[is.na(pre_update_df$Final_Applicant)]
+pre_update_df=pre_update_df[pre_update_df$Applicants!=pre_update_df$Final_Applicant,]
+if(nrow(pre_update_df)!=0){
+  for(i in 1:nrow(pre_update_df)){
+    predict_df$Firm_a[predict_df$Firm_a==pre_update_df$Applicants[i]]=pre_update_df$Final_Applicant[i]
+    predict_df$Firm_b[predict_df$Firm_b==pre_update_df$Applicants[i]]=pre_update_df$Final_Applicant[i]
+  }  
+}
+
+predict_df$Edges=paste0(predict_df$Firm_a,';;',predict_df$Firm_b)
+
+error_id_a1=which(lapply(predict_df$Edges,function(x){return(n_distinct(unlist(str_split(x,";;"))))})%>%unlist==1)
+predict_df=predict_df[-error_id_a1,]
+#predict_df[str_detect(predict_df$Edges,pat),]%>%View()
+```
+
+```{r}
+
+# 新增超連結function
+createLink <- function(val) {
+  text=paste0('<a href="',val,'" target="_blank" class="btn btn-primary">Info</a>')
+}
+#
+
+#find_cpc從patent info撈出資料的步驟要獨立成一個函數
+find_cpc=function(pat,display_num,cpc_char_len){
+#pat="Samsung"
+ip_df=patent_info[which(str_detect(patent_info$Final_Applicant,regex(pat,T))),]
+ip_list=ip_df$`CPC Classifications` %>% strsplit(";;")
+for(i in 1:length(ip_list)){
+  ip_list[[i]]=substr(ip_list[[i]],1,cpc_char_len)
+}
+
+table(ip_list[[1]])
+ip_arr=ip_list%>%unlist%>%unique()%>%sort
+ip_matrix=matrix(nrow=length(ip_list)+1,ncol=length(ip_arr))
+colnames(ip_matrix)=ip_arr
+for(i in 1:length(ip_list)){
+  ip_matrix[i,]=0
+  ti=table(ip_list[[i]])
+  for(j in 1:length(ti)){
+    ip_matrix[i,which(colnames(ip_matrix)==names(ti[j]))]=ti[j]  
+  }
+}
+
+# for(i in 1:ncol(ip_matrix)){
+#   gc=ip_matrix[1:(nrow(ip_matrix)-1),i]
+#   ip_matrix[nrow(ip_matrix),i]=sum(gc[gc>0])/length(gc[gc>0]) 
+# }
+for(i in 1:ncol(ip_matrix)){
+  gc=ip_matrix[1:(nrow(ip_matrix)-1),i]
+  ip_matrix[nrow(ip_matrix),i]=length(gc[gc>0])
+}
+result=ip_matrix[length(ip_list)+1,]%>%sort%>%tail(display_num)%>%as.data.frame()
+
+colnames(result)="Num"
+result=data.frame(CPC=row.names(result),Num=result$Num)
+result=result%>%arrange(desc(Num))
+return(result)
+}
+
+find_cpc2=function(pat1,pat2="",display_num,cpc_char_len,mode){
+#pat1="Samsung"
+#pat2="Unicamp"
+if(mode==1){
+  log1=str_detect(patent_info$Final_Applicant,regex(pat1,T))
+  log2=str_detect(patent_info$Final_Applicant,regex(pat2,T))
+  ipid=which(log1&log2)
+}
+  else{ipid=which(str_detect(patent_info$Final_Applicant,regex(pat1,T)))}
+ip_df=patent_info[ipid,]
+ip_list=ip_df$`CPC Classifications` %>% strsplit(";;")
+for(i in 1:length(ip_list)){
+  ip_list[[i]]=substr(ip_list[[i]],1,cpc_char_len)
+}
+
+table(ip_list[[1]])
+ip_arr=ip_list%>%unlist%>%unique()%>%sort
+ip_matrix=matrix(nrow=length(ip_list)+1,ncol=length(ip_arr))
+colnames(ip_matrix)=ip_arr
+for(i in 1:length(ip_list)){
+  ip_matrix[i,]=0
+  ti=table(ip_list[[i]])
+  for(j in 1:length(ti)){
+    ip_matrix[i,which(colnames(ip_matrix)==names(ti[j]))]=ti[j]  
+  }
+}
+
+# for(i in 1:ncol(ip_matrix)){
+#   gc=ip_matrix[1:(nrow(ip_matrix)-1),i]
+#   ip_matrix[nrow(ip_matrix),i]=sum(gc[gc>0])/length(gc[gc>0]) 
+# }
+for(i in 1:ncol(ip_matrix)){
+  gc=ip_matrix[1:(nrow(ip_matrix)-1),i]
+  ip_matrix[nrow(ip_matrix),i]=length(gc[gc>0])
+}
+result=ip_matrix[length(ip_list)+1,]%>%sort%>%tail(display_num)%>%as.data.frame()
+
+colnames(result)="Num"
+result=data.frame(CPC=row.names(result),Num=result$Num)
+result=result%>%arrange(desc(Num))
+return(result)
+}
+
+search_patent=function(pat){
+  pat_list=patent_info$Final_Applicant[str_detect(patent_info$Final_Applicant,regex(pat,T))]
+  pat_list=str_split(pat_list,";;")%>%unlist
+  df=table(pat_list[str_detect(pat_list,regex(pat,T))])%>%as.data.frame()
+  df=df[order(-df[,2]),]
+  return(df)
+}
+
+search_patent2=function(pat){
+  pat_list=patent_info$Applicants[str_detect(patent_info$Applicants,regex(pat,T))]
+  pat_list=str_split(pat_list,";;")%>%unlist
+  df=table(pat_list[str_detect(pat_list,regex(pat,T))])%>%as.data.frame()
+  df=df[order(-df[,2]),]
+  return(df)
+}
+
+find_cpc3=function(patent_df,display_num,cpc_char_len){
+#pat="Samsung"
+ip_df=patent_df
+ip_list=ip_df$`CPC Classifications` %>% strsplit(";;")
+for(i in 1:length(ip_list)){
+  ip_list[[i]]=substr(ip_list[[i]],1,cpc_char_len)
+}
+
+table(ip_list[[1]])
+ip_arr=ip_list%>%unlist%>%unique()%>%sort
+ip_matrix=matrix(nrow=length(ip_list)+1,ncol=length(ip_arr))
+colnames(ip_matrix)=ip_arr
+for(i in 1:length(ip_list)){
+  ip_matrix[i,]=0
+  ti=table(ip_list[[i]])
+  for(j in 1:length(ti)){
+    ip_matrix[i,which(colnames(ip_matrix)==names(ti[j]))]=ti[j]  
+  }
+}
+
+# for(i in 1:ncol(ip_matrix)){
+#   gc=ip_matrix[1:(nrow(ip_matrix)-1),i]
+#   ip_matrix[nrow(ip_matrix),i]=sum(gc[gc>0])/length(gc[gc>0]) 
+# }
+for(i in 1:ncol(ip_matrix)){
+  gc=ip_matrix[1:(nrow(ip_matrix)-1),i]
+  ip_matrix[nrow(ip_matrix),i]=length(gc[gc>0])
+}
+result=ip_matrix[length(ip_list)+1,]%>%sort%>%tail(display_num)%>%as.data.frame()
+
+colnames(result)="Num"
+result=data.frame(CPC=row.names(result),Num=result$Num)
+result=result%>%arrange(desc(Num))
+return(result)
+}
+
+##去識別化function##############################################################
+de_idf_function=function(df,target_col,replace_text){
+  #df=df2;target_col="Firm";replace_text="Firm"
+  df$var=df[,which(colnames(df)==target_col)]%>%unlist%>%as.character()
+  df_replace=data.frame(var=sort(unique(df$var)))
+  df_replace$var_id=paste0(replace_text,1:length(df_replace$var))
+  
+  for(i in 1:nrow(df_replace)){
+  df$var[df$var==df_replace$var[i]]=df_replace$var_id[i]
+  }
+  df[,which(colnames(df)==target_col)]=df$var
+  df=df%>%select(-"var")
+  return(df)
+}
+################################################################################
+
+```
+
+```{r}
+
+
+```
+
+
+```{r}
+EX_A = eventReactive(input$go_a1, {
+  df1=find_cpc2(input$pattern_a1,input$pattern_a2,input$display_num_a1,
+                input$cpc_char_len_a1,input$mode_a1)
+  list(df1=df1)
+  })
+
+EX_A2 = eventReactive(input$go_a1, {
+ log1=str_detect(patent_info$Final_Applicant,regex(input$pattern_a1,T))
+ log2=str_detect(patent_info$Final_Applicant,regex(input$pattern_a2,T))
+ if(input$mode_a1==0){
+ df=patent_info[log1,c("Publication Year","Title","Application Number")]  
+ df2=table(str_split(patent_info$Final_Applicant[log1],";;")%>%unlist)%>%as.data.frame()
+ df2=df2[!str_detect(df2$Var1,regex(input$pattern_a1,T)),]%>%arrange(desc(Freq))
+ }
+ colnames(df2)=c("Partner","Times")
+  list(df1=df,df2=df2)
+})
+
+
+
+
+
+DF=reactive({
+  df1=find_cpc(input$pattern1,input$display_num1,input$cpc_char_len1)
+  #df2=find_cpc(input$pattern2,input$display_num1,input$cpc_char_len1)
+  df3=search_patent(input$pattern1)
+  df4=search_patent2(input$pattern1)
+  list(df1=df1,df3=df3,df4=df4)
+  })
+
+# DF2=reactive({
+#   df1=find_cpc(input$pattern1,input$display_num1,input$cpc_char_len1)
+#   df2=find_cpc(input$pattern2,input$display_num2,input$cpc_char_len2)
+#   df3=search_patent(input$pattern1)
+#   
+#   list(df1=df1,df2=df2,df3=df3)
+#   })
+```
+
+<!-- D1 -->
+<!-- ====================================== -->
+
+<!-- Column input {data-width=20%} -->
+<!-- ------------------------------------- -->
+<!-- ### 變數選擇 -->
+<!-- ```{r} -->
+<!-- textInput("pattern_a1","輸入欲尋找的關鍵字1","Samsung") -->
+<!-- textInput("pattern_a2","輸入欲尋找的關鍵字2","Unicamp") -->
+<!-- sliderInput("display_num_a1", "顯示比數",  3, 7,  5, 1) -->
+<!-- sliderInput("cpc_char_len_a1", "CPC擷取字元數",  4, 12,  4, 1) -->
+<!-- actionButton("go_a1","開始搜尋") -->
+
+
+<!-- radioButtons("mode_a1", label = "搜尋模式",  -->
+<!--     choices = list("公司比較" = 0, "兩公司合作持有" = 1), -->
+<!--     selected = 0) -->
+<!-- ``` -->
+
+
+<!-- Column {data-width=50%} -->
+<!-- ------------------------------------- -->
+<!-- ### CPC統計　{data-height=45%} -->
+<!-- ```{r } -->
+<!-- DT::renderDataTable({ -->
+<!--  df1=EX_A()$df1 -->
+<!--  datatable( -->
+<!--    df1 , extensions=c('Scroller'),rownames=F, -->
+<!--    # formatStyle(columns=0:2, fontSize = '90%'), -->
+<!--    options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F) -->
+<!--    ) -->
+<!--  }) -->
+<!-- ``` -->
+
+<!-- ### T2 {data-height=50%} -->
+<!-- ```{r} -->
+<!-- #input=list(pattern_a1="Samsung",pattern_a2="Unicamp") -->
+<!-- DT::renderDataTable({ -->
+<!--  df=EX_A2()$df1 -->
+
+
+<!--  datatable( -->
+<!--    df , extensions=c('Scroller'),rownames=F, -->
+<!--    # formatStyle(columns=0:2, fontSize = '90%'), -->
+<!--    options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F) -->
+<!--    ) -->
+<!--  }) -->
+<!-- ``` -->
+
+
+<!-- Column {data-width=35%} -->
+<!-- ------------------------------------- -->
+<!-- ### 公司一{data-height=50%} -->
+
+<!-- ```{r } -->
+<!-- DT::renderDataTable({ -->
+<!--  df2=EX_A2()$df2 -->
+
+
+<!--  datatable( -->
+<!--    df2 , extensions=c('Scroller'),rownames=F, -->
+<!--    # formatStyle(columns=0:2, fontSize = '90%'), -->
+<!--    options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F) -->
+<!--    ) -->
+<!--  }) -->
+
+<!-- ``` -->
+
+<!-- ### 公司二{data-height=50%} -->
+<!-- ```{r} -->
+
+<!-- ``` -->
+
+
+資料清理 {data-orientation=columns}
+======================================
+
+Column input {data-width=20%}
+-------------------------------------
+### 變數選擇
+```{r}
+textInput("pattern1","輸入欲尋找的關鍵字1","Samsung")
+hr();
+sliderInput("display_num1", "顯示比數",  3, 7,  5, 1)
+sliderInput("cpc_char_len1", "CPC擷取字元數",  4, 12,  4, 1)
+hr();
+hr();
+# input=list(pattern1="Samsung",display_num1=5,cpc_char_len1=4) #For Debug
+
+# textInput("pattern2","輸入欲尋找的關鍵字2","Samsung")
+# hr();
+# sliderInput("display_num2", "顯示比數",  3, 7,  5, 1)
+# sliderInput("cpc_char_len2", "CPC擷取字元數",  4, 12,  4, 1)
+
+
+```
+
+
+Column {data-width=80%}
+-------------------------------------
+### Final Applicant搜索　{data-height=50%}
+```{r }
+DT::renderDataTable({
+ df3=DF()$df3
+  datatable(
+   df3 , extensions=c('Scroller'),rownames=F,
+   # formatStyle(columns=0:2, fontSize = '90%'),
+   options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F)
+   )
+ })
+
+
+
+```
+
+### Applicant搜索 {data-height=50%}
+```{r}
+DT::renderDataTable({
+ df4=DF()$df4
+ 
+ 
+  datatable(
+   df4 , extensions=c('Scroller'),rownames=F,
+   # formatStyle(columns=0:2, fontSize = '90%'),
+   options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F)
+   )
+ })
+```
+
+
+專利搜索
+======================================
+
+
+Column input {data-width=20%}
+-------------------------------------
+### 變數選擇
+```{r}
+textInput("pattern_d1","輸入欲尋找的公司",default_firm)
+textInput("pattern_d2","輸入欲尋找的合作公司",default_firm)
+
+#sliderInput("display_num_d1", "顯示比數",  3, 7,  5, 1)
+#sliderInput("cpc_char_len_d1", "CPC擷取字元數",  4, 12,  4, 1)
+
+actionButton("go_d1","開始搜尋")
+hr();
+radioButtons("mode_d1", label = "搜尋模式", 
+    choices = list("該公司所有專利" = 0, "兩公司合作持有" = 1, "該公司合作專利" = 2),
+    selected = 0)
+
+radioButtons("mode_d2", label = "搜尋模式2", 
+    choices = list("Final Applicant搜索" = 0, "Applicant搜索" = 1),
+    selected = 0)
+```
+
+```{r}
+RX_A1 = eventReactive(input$go_d1, {
+# input = list(pattern =c("Ultra Electronics"),cls=unique(X$artSource),yr=c(2015,2020),ig=T)
+# input$year=c(2000,2020)
+   log1=str_detect(patent_info$Final_Applicant,regex(input$pattern_d1,T))
+   log2=str_detect(patent_info$Final_Applicant,regex(input$pattern_d2,T))
+   log3=str_detect(patent_info$Final_Applicant,";;")
+   if(input$mode_d1==0){
+   df=patent_info[log1,]  
+   }
+   if(input$mode_d1==1){
+   df=patent_info[log1&log2,]  
+   }
+   if(input$mode_d1==2){
+   df=patent_info[log1&log3,]  
+   }
+
+  list(df=df)
+  })
+
+
+RX_B1 = eventReactive(input$go_d1, {
+ #input=list(pattern_d1="TOYOTA MOTOR CO LTD",mode_a1=0)
+ log1=str_detect(patent_info$Final_Applicant,regex(input$pattern_d1,T))
+ 
+ if(input$mode_d1==0){
+ df=patent_info[log1,c("Publication Year","Title","Application Number")]  
+ df2=table(str_split(patent_info$Final_Applicant[log1],";;")%>%unlist)%>%as.data.frame()
+ df2=df2[!str_detect(df2$Var1,regex(input$pattern_d1,T)),]%>%arrange(desc(Freq))
+ }
+ colnames(df2)=c("Partner","Times")
+  list(df1=df,df2=df2)
+})
+```
+
+
+Column {data-width=80%}
+-------------------------------------
+
+### 專利搜尋結果 {data-height=50%}
+```{r}
+uiOutput("dynamic")
+output$dynamic <- renderUI({ dataTableOutput("myTable") })
+output$myTable <- DT::renderDataTable({
+ df=RX_A1()$df
+ 
+ df=df[,c("Publication Year","Title","CPC Classifications","Final_Applicant")]
+ datatable(
+   df , extensions=c('Scroller'),rownames=F,
+   # formatStyle(columns=0:2, fontSize = '90%'),
+   options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F)
+   )
+ })
+```
+
+### 專利摘要與專利Lens URL {data-height=50%}
+
+```{r}
+RowSel = eventReactive( # to prevent race-around
+  input$myTable_rows_selected, {input$myTable_rows_selected})
+
+
+
+renderDataTable({ 
+    ctag = c('<font color="red"><b>')
+    ctag2 = c('<font color="orange"><b>')
+    
+    i = RowSel()
+
+   log1=str_detect(patent_info$Final_Applicant,regex(input$pattern_d1,T))
+   log2=str_detect(patent_info$Final_Applicant,regex(input$pattern_d2,T))
+   if(input$mode_d1==0){
+   df=patent_info[log1,c("Abstract","URL")]  
+   }
+   if(input$mode_d1==1){
+   df=patent_info[log1&log2,c("Abstract","URL")]  
+   }
+   
+   
+   df=df[i,]
+   #df$URL=createLink(df$URL)
+   datatable(
+     df , extensions=c('Scroller'),rownames=F,
+     # formatStyle(columns=0:2, fontSize = '90%'),
+     options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F)
+     )
+      
+  })
+```
+
+CPC領域分析
+======================================
+
+Column input {data-width=20%}
+-------------------------------------
+### 變數選擇
+```{r}
+#textInput("pattern_e1","輸入欲尋找的關鍵字1","Samsung")
+#textInput("pattern_e2","輸入欲尋找的關鍵字2","Unicamp")
+sliderInput("display_num_e1", "顯示比數",  3, 7,  5, 1)
+sliderInput("cpc_char_len_e1", "CPC擷取字元數",  4, 12,  4, 1)
+#actionButton("go_e1","開始搜尋")
+
+
+#radioButtons("mode_a1", label = "搜尋模式", 
+#    choices = list("公司比較" = 0, "兩公司合作持有" = 1),
+#    selected = 0)
+```
+
+
+Column {data-width=50%}
+-------------------------------------
+### 公司合作夥伴　{data-height=50%}
+```{r }
+uiOutput("dynamic2")
+output$dynamic2 <- renderUI({ dataTableOutput("myTable2") })
+output$myTable2 <- DT::renderDataTable({
+ df1=RX_B1()$df2
+ 
+ df1=de_idf_function(df1,"Partner","Firm")
+ datatable(
+   df1 , extensions=c('Scroller'),rownames=F,
+   # formatStyle(columns=0:2, fontSize = '90%'),
+   selection=list(mode='single'),
+   options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F)
+   )
+ })
+```
+
+### 合作專利CPC領域 {data-height=50%}
+```{r}
+RowSel2 = eventReactive( # to prevent race-around
+  input$myTable2_rows_selected, {input$myTable2_rows_selected})
+
+
+
+renderDataTable({ 
+    ctag = c('<font color="red"><b>')
+    ctag2 = c('<font color="orange"><b>')
+    df2=RX_B1()$df2
+    i = RowSel2()
+    
+    partner_name1=df2[i,1]
+    partner_name1=partner_name1[1]
+    
+    log1=str_detect(patent_info$Final_Applicant,regex(input$pattern_d1,T))
+    log2=str_detect(patent_info$Final_Applicant,regex(partner_name1,T))
+    
+    df=patent_info[log1&log2,]  
+    firm_b_cpc=find_cpc3(df,input$display_num_e1,input$cpc_char_len_e1)
+    firm_b_cpc=de_idf_function(firm_b_cpc,"CPC","CPC code")
+    #df$URL=createLink(df$URL)
+    datatable(
+     firm_b_cpc , extensions=c('Scroller'),rownames=F,
+     # formatStyle(columns=0:2, fontSize = '90%'),
+     options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F)
+     )
+      
+      
+  })
+```
+
+
+Column {data-width=35%}
+-------------------------------------
+### 公司CPC領域 {data-height=50%}
+
+```{r }
+renderDataTable({ 
+  
+  firm_a_cpc=find_cpc(input$pattern_d1,input$display_num_e1,input$cpc_char_len_e1)
+  
+  
+  firm_a_cpc=de_idf_function(firm_a_cpc,"CPC","CPC code")
+  datatable(
+    firm_a_cpc , extensions=c('Scroller'),rownames=F,
+    # formatStyle(columns=0:2, fontSize = '90%'),
+    options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F)
+  )
+})
+```
+
+### 合作夥伴CPC領域 {data-height=50%}
+```{r}
+RowSel2 = eventReactive( # to prevent race-around
+  input$myTable2_rows_selected, {input$myTable2_rows_selected})
+
+
+
+renderDataTable({ 
+    ctag = c('<font color="red"><b>')
+    ctag2 = c('<font color="orange"><b>')
+    df2=RX_B1()$df2
+    i = RowSel2()
+    
+    partner_name1=df2[i,1]
+    partner_name1=partner_name1[1]
+    
+    log1=str_detect(patent_info$Final_Applicant,regex(partner_name1,T))
+    
+    
+    df=patent_info[log1,]  
+    firm_b_cpc=find_cpc3(df,input$display_num_e1,input$cpc_char_len_e1)
+    #df$URL=createLink(df$URL)
+    firm_b_cpc=de_idf_function(firm_b_cpc,"CPC","CPC code")
+    datatable(
+     firm_b_cpc , extensions=c('Scroller'),rownames=F,
+     # formatStyle(columns=0:2, fontSize = '90%'),
+     options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F)
+     )
+      
+  })
+```
+
+<!-- D5 -->
+<!-- ====================================== -->
+
+<!-- Column input {data-width=20%} -->
+<!-- ------------------------------------- -->
+<!-- ### 變數選擇 -->
+<!-- ```{r} -->
+<!-- #textInput("pattern_e1","輸入欲尋找的關鍵字1","Samsung") -->
+<!-- #textInput("pattern_e2","輸入欲尋找的關鍵字2","Unicamp") -->
+<!-- #sliderInput("display_num_e1", "顯示比數",  3, 7,  5, 1) -->
+<!-- #sliderInput("cpc_char_len_e1", "CPC擷取字元數",  4, 12,  4, 1) -->
+<!-- #actionButton("go_e1","開始搜尋") -->
+
+
+<!-- #radioButtons("mode_a1", label = "搜尋模式",  -->
+<!-- #    choices = list("公司比較" = 0, "兩公司合作持有" = 1), -->
+<!-- #    selected = 0) -->
+<!-- ``` -->
+
+
+<!-- Column {data-width=50%} -->
+<!-- ------------------------------------- -->
+<!-- ### 公司合作夥伴　{data-height=45%} -->
+<!-- ```{r } -->
+
+<!-- ``` -->
+
+<!-- ### T2 {data-height=50%} -->
+<!-- ```{r} -->
+
+<!-- ``` -->
+
+
+<!-- Column {data-width=35%} -->
+<!-- ------------------------------------- -->
+<!-- ### 公司CPC領域 {data-height=50%} -->
+
+<!-- ```{r } -->
+<!-- renderPlot({    -->
+<!--   firm=default_firm -->
+<!--   ppp=patent_info$Final_Applicant[str_detect(patent_info$Final_Applicant,firm)] -->
+<!--   ppp=str_split(ppp,";;")%>%unlist%>%unique -->
+<!--   ppp=ppp[ppp!=firm] -->
+
+
+<!--   df=patent_info[str_detect(patent_info$Final_Applicant,firm),] -->
+<!--   result=find_cpc3(df,40,4) -->
+<!--   colnames(result)[2]=firm -->
+<!--   l1=lapply(ppp[1:10], function(x){ -->
+<!--     df=patent_info[str_detect(patent_info$Final_Applicant,x),] -->
+<!--     df=find_cpc3(df,40,4) -->
+<!--     colnames(df)[2]=x -->
+<!--     return(df) -->
+<!--   }) -->
+<!--   for(i in 1:length(l1)){ -->
+<!--     result=left_join(result,l1[[i]]) -->
+<!--   } -->
+<!--   rownames(result)=result$CPC -->
+<!--   result=result%>%select(-CPC) -->
+<!--   result[is.na(result)]=0 -->
+<!--   colnames(result)[3]="NUTAAT" -->
+<!--   for(i in 1:ncol(result)){ -->
+<!--     result[,i]=result[,i]/sum(result[,i]) -->
+<!--   } -->
+<!--   pheatmap(result) -->
+
+<!-- }) -->
+
+<!-- ``` -->
+
+<!-- ### 合作夥伴CPC領域 {data-height=50%} -->
+<!-- ```{r} -->
+<!-- ``` -->
+
+合作夥伴推薦
+======================================
+
+Column input {data-width=20%}
+-------------------------------------
+### 變數選擇
+```{r}
+
+```
+
+
+Column {data-width=50%}
+-------------------------------------
+### 公司合作夥伴　{data-height=50%}
+```{r }
+DT::renderDataTable({
+ df1=RX_B1()$df2
+ 
+ df2=predict_df[str_detect(predict_df$Edges,regex(input$pattern_d1,T)),]
+ df2=df2[,c("pred","Edges")]
+
+
+ # df2$Firm=lapply(str_split(df2$Edges,";;"),function(x){
+ #  return(x[!str_detect(x,input$pattern_d1)])
+ # })%>%unlist
+ 
+ df2$Firm=lapply(str_split(df2$Edges,";;"),function(x){
+  return(x[!str_detect(x,input$pattern_d1)])
+ })%>%unlist
+ df2=df2%>%group_by(Firm)%>%summarise(pred=max(pred))%>%arrange(desc(pred))
+ df2=df2%>%mutate(Cooperated_or_not=ifelse(Firm%in%df1$Partner,"Yes","No"))
+ 
+ 
+ df2=de_idf_function(df2,"Firm","Firm")
+ #df2=de_idf_function(df2,"Partner","Firm")
+ datatable(
+   df2 , extensions=c('Scroller'),rownames=F,
+   # formatStyle(columns=0:2, fontSize = '90%'),
+   options=list(scrollY="450px",scrollX=F,paging=F,searching=F,info=F)
+   )
+ })
+```
+
+### 合作專利CPC領域 {data-height=50%}
+```{r}
+
+```
+
+
+Column {data-width=35%}
+-------------------------------------
+### 公司CPC領域 {data-height=50%}
+
+```{r }
+
+```
+
+### 合作夥伴CPC領域 {data-height=50%}
+```{r}
+
+```
+
+推薦網絡
+======================================
+
+```{r}
+EX_G1 = eventReactive(input$go_g1, {
+ #input=list(threshold_g1=0.5)
+ df=predict_df[predict_df$pred>input$threshold_g1,]
+ predict_network_list=generate_gephi_data(df)
+ list(predict_network_list=predict_network_list)
+})
+```
+
+Column input {data-width=20%}
+-------------------------------------
+### 變數選擇
+```{r}
+sliderInput("threshold_g1", "門檻值",  0, 1,  0.5, 0.01)
+actionButton("go_g1","開始搜尋")
+```
+
+
+Column {data-width=80%}
+-------------------------------------
+### 公司合作夥伴　{data-height=50%}
+
+```{r }
+require(visNetwork)
+renderVisNetwork({
+  predict_network_list=EX_G1()$predict_network_list
+  
+#  #臨時用
+#  input=list(threshold_g1=0.5)
+#  df=predict_df[predict_df$pred>input$threshold_g1,]
+#  predict_network_list=generate_gephi_data(df)
+
+# 
+# nodes <- data.frame(id = 1:3)
+# edges <- data.frame(from = c(1,2), to = c(1,3))
+# visNetwork(nodes, edges, width = "100%")
+  
+  nodes=predict_network_list[[1]]
+  
+  #nodes=de_idf_function(nodes,"label","Firm")
+  
+  colnames(nodes)=c("id","label")
+  edges=predict_network_list[[2]]
+  colnames(edges)[2:3]=c("from","to")
+  
+#  nb <- 10
+#  nodes <- data.frame(id = 1:nb, label = paste("Label", 1:nb),
+#  group = sample(LETTERS[1:3], nb, replace = TRUE), value = 1:nb,
+#  title = paste0("<p>", 1:nb,"<br>Tooltip !</p>"), stringsAsFactors = FALSE)
+
+#  edges <- data.frame(from = trunc(runif(nb)*(nb-1))+1,
+#  to = trunc(runif(nb)*(nb-1))+1,
+#  value = rnorm(nb, 10), label = paste("Edge", 1:nb),
+#  title = paste0("<p>", 1:nb,"<br>Edge Tooltip !</p>"))
+  
+  
+  visNetwork(nodes, edges)%>% visLegend()
+  
+})
+```
